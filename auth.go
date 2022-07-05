@@ -5,12 +5,11 @@ import (
 	"crypto/rsa"
 	"fmt"
 	"github.com/golang-jwt/jwt"
-	"github.com/prometheus/common/log"
+	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
-	"os"
 	"strings"
 )
 
@@ -22,21 +21,38 @@ var (
 	errInvalidIssuer   = status.Errorf(codes.Unauthenticated, "invalid issuer")
 	errInvalidSubject  = status.Errorf(codes.Unauthenticated, "invalid subject")
 	errMissingToken    = status.Errorf(codes.NotFound, "missing token")
-	Key                *rsa.PublicKey
 )
+
+type Authorizer struct {
+	Audience string
+	Scope    string
+	Issuer   string
+	Subject  string
+	Cert     *rsa.PublicKey
+}
 
 type MyCustomClaims struct {
 	Scope string `json:"scope"`
 	jwt.StandardClaims
 }
 
-func EnsureValidToken(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+func NewAuthorizer(scope string, audience string, issuer string, subject string, cert *rsa.PublicKey) *Authorizer {
+	return &Authorizer{
+		Audience: audience,
+		Scope:    scope,
+		Issuer:   issuer,
+		Subject:  subject,
+		Cert:     cert,
+	}
+}
+
+func (a *Authorizer) EnsureValidToken(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
 		return nil, errMissingMetadata
 	}
 
-	token, claims, err := ParseToken(md["authorization"])
+	token, claims, err := a.ParseToken(md["authorization"])
 	if err != nil {
 		log.Errorf("failed to parse token: %s", err)
 	}
@@ -45,26 +61,26 @@ func EnsureValidToken(ctx context.Context, req interface{}, info *grpc.UnaryServ
 		return nil, errInvalidToken
 	}
 
-	if !claims.HasScope(os.Getenv("AUTH0_SCOPE")) {
+	if !claims.HasScope(a.Scope) {
 		return nil, errInvalidScope
 	}
 
-	if !claims.VerifyAudience(os.Getenv("AUTH0_AUDIENCE"), true) {
+	if !claims.VerifyAudience(a.Audience, true) {
 		return nil, errInvalidAudience
 	}
 
-	if !claims.VerifyIssuer(os.Getenv("AUTH0_ISSUER"), true) {
+	if !claims.VerifyIssuer(a.Issuer, true) {
 		return nil, errInvalidIssuer
 	}
 
-	if claims.Subject != os.Getenv("AUTH0_SUBJECT") {
+	if claims.Subject != a.Subject {
 		return nil, errInvalidSubject
 	}
 
 	return handler(ctx, req)
 }
 
-func ParseToken(authorization []string) (*jwt.Token, *MyCustomClaims, error) {
+func (a *Authorizer) ParseToken(authorization []string) (*jwt.Token, *MyCustomClaims, error) {
 	if len(authorization) < 1 {
 		return nil, nil, errMissingToken
 	}
@@ -80,7 +96,7 @@ func ParseToken(authorization []string) (*jwt.Token, *MyCustomClaims, error) {
 				return nil, fmt.Errorf("unexpected token signing method")
 			}
 
-			return Key, nil
+			return a.Cert, nil
 		},
 	)
 	if err != nil {

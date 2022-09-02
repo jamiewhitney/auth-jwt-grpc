@@ -136,7 +136,7 @@ func (c MyCustomClaims) HasScope(expectedScope string) bool {
 	return false
 }
 
-func fetchToken(id string, secret string, url string, audience string, grantType string) *oauth2.Token {
+func FetchToken(id string, secret string, url string, audience string, grantType string) *oauth2.Token {
 	var tokenObject TokenReponse
 
 	data := TokenRequest{

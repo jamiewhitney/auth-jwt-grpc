@@ -1,16 +1,21 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"crypto/rsa"
 	"fmt"
 	"github.com/golang-jwt/jwt"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/oauth2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"io/ioutil"
+	"net/http"
 	"strings"
+	"encoding/json"
 )
 
 var (
@@ -34,6 +39,20 @@ type Authorizer struct {
 type MyCustomClaims struct {
 	Scope string `json:"scope"`
 	jwt.StandardClaims
+}
+
+type TokenReponse struct {
+	AccessToken string `json:"access_token"`
+	Scope       string `json:"scope"`
+	ExpiresIn   int    `json:"expires_in"`
+	TokenType   string `json:"token_type"`
+}
+
+type TokenRequest struct {
+	ClientId     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
+	Audience     string `json:"audience"`
+	GrantType    string `json:"grant_type"`
 }
 
 func NewAuthorizer(scope string, audience string, issuer string, subject string, cert *rsa.PublicKey) *Authorizer {
@@ -115,4 +134,37 @@ func (c MyCustomClaims) HasScope(expectedScope string) bool {
 	}
 
 	return false
+}
+
+func fetchToken(id string, secret string, url string, audience string, grantType string) *oauth2.Token {
+	var tokenObject TokenReponse
+
+	data := TokenRequest{
+		ClientId:     id,
+		ClientSecret: secret,
+		Audience:     audience,
+		GrantType:    grantType,
+	}
+
+	payload, _ := json.Marshal(data)
+
+	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(payload))
+
+	req.Header.Add("content-type", "application/json")
+
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	defer res.Body.Close()
+	responseData, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	json.Unmarshal(responseData, &tokenObject)
+	return &oauth2.Token{
+		AccessToken: tokenObject.AccessToken,
+	}
 }

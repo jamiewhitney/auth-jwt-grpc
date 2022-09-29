@@ -3,9 +3,10 @@ package auth
 import (
 	"bytes"
 	"context"
-	"crypto/rsa"
+	"encoding/json"
 	"fmt"
-	"github.com/golang-jwt/jwt"
+	"github.com/MicahParks/keyfunc"
+	"github.com/golang-jwt/jwt/v4"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/oauth2"
 	"google.golang.org/grpc"
@@ -15,7 +16,6 @@ import (
 	"io/ioutil"
 	"net/http"
 	"strings"
-	"encoding/json"
 )
 
 var (
@@ -33,7 +33,7 @@ type Authorizer struct {
 	Scope    string
 	Issuer   string
 	Subject  string
-	Cert     *rsa.PublicKey
+	Jwks     *keyfunc.JWKS
 }
 
 type MyCustomClaims struct {
@@ -55,13 +55,20 @@ type TokenRequest struct {
 	GrantType    string `json:"grant_type"`
 }
 
-func NewAuthorizer(scope string, audience string, issuer string, subject string, cert *rsa.PublicKey) *Authorizer {
+func NewAuthorizer(scope string, audience string, issuer string, subject string, jwksURL string) *Authorizer {
+	//jwksURL := "https://dev-lfgancuj.us.auth0.com/.well-known/jwks.json"
+	// Create the JWKS from the resource at the given URL.
+	jwks, err := keyfunc.Get(jwksURL, keyfunc.Options{}) // See recommended options in the examples directory.
+	if err != nil {
+		log.Fatalf("Failed to get the JWKS from the given URL.\nError: %s", err)
+	}
+
 	return &Authorizer{
 		Audience: audience,
 		Scope:    scope,
 		Issuer:   issuer,
 		Subject:  subject,
-		Cert:     cert,
+		Jwks:     jwks,
 	}
 }
 
@@ -105,24 +112,12 @@ func (a *Authorizer) ParseToken(authorization []string) (*jwt.Token, *MyCustomCl
 	}
 	accessToken := strings.TrimPrefix(authorization[0], "Bearer ")
 
-	claimsStruct := MyCustomClaims{}
-	token, err := jwt.ParseWithClaims(
-		accessToken,
-		&claimsStruct,
-		func(token *jwt.Token) (interface{}, error) {
-			_, ok := token.Method.(*jwt.SigningMethodRSA)
-			if !ok {
-				return nil, fmt.Errorf("unexpected token signing method")
-			}
-
-			return a.Cert, nil
-		},
-	)
+	token, err := jwt.ParseWithClaims(accessToken, &MyCustomClaims{}, a.Jwks.Keyfunc)
 	if err != nil {
 		return nil, nil, errInvalidToken
 	}
 
-	return token, &claimsStruct, nil
+	return token, token.Claims.(*MyCustomClaims), nil
 }
 
 func (c MyCustomClaims) HasScope(expectedScope string) bool {

@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"strings"
@@ -29,11 +30,15 @@ var (
 )
 
 type Authorizer struct {
-	Audience string
-	Scope    string
-	Issuer   string
-	Subject  string
-	Jwks     *keyfunc.JWKS
+	ClientID     string
+	ClientSecret string
+	Audience     string
+	Scope        string
+	Issuer       string
+	Subject      string
+	Jwks         *keyfunc.JWKS
+	TokenURL     string
+	Token        *oauth2.Token
 }
 
 type MyCustomClaims struct {
@@ -160,4 +165,81 @@ func FetchToken(id string, secret string, url string, audience string, grantType
 	return &oauth2.Token{
 		AccessToken: tokenObject.AccessToken,
 	}
+}
+
+// AuthenticationClientInterceptor New Interceptor
+func (a *Authorizer) AuthenticationClientInterceptor(ctx context.Context, method string, req, reply interface{}, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+	if a.Token == nil {
+		token, err := a.GetToken()
+		if err != nil {
+			return err
+		}
+
+		a.Token = token
+	}
+
+	if a.Token.Valid() {
+		md := metadata.New(map[string]string{
+			"authorization": a.Token.AccessToken,
+		})
+
+		ctx = metadata.NewOutgoingContext(ctx, md)
+
+		return invoker(ctx, method, req, reply, cc, opts...)
+	} else {
+		token, err := a.GetToken()
+		if err != nil {
+			return err
+		}
+
+		a.Token = token
+
+		md := metadata.New(map[string]string{
+			"authorization": a.Token.AccessToken,
+		})
+
+		ctx = metadata.NewOutgoingContext(ctx, md)
+
+		return invoker(ctx, method, req, reply, cc, opts...)
+	}
+}
+
+func (a *Authorizer) GetToken() (*oauth2.Token, error) {
+	var tokenObject oauth2.Token
+	data := TokenRequest{
+		ClientId:     a.ClientID,
+		ClientSecret: a.ClientSecret,
+		Audience:     a.Audience,
+		GrantType:    "client_credentials",
+	}
+
+	payload, err := json.Marshal(data)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", a.TokenURL, bytes.NewBuffer(payload))
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("content-type", "application/json")
+
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	defer res.Body.Close()
+
+	responseData, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := json.Unmarshal(responseData, &tokenObject); err != nil {
+		return nil, err
+	}
+
+	return &tokenObject, nil
 }
